@@ -2,64 +2,88 @@
 @using System.IO
 @using System.Security.Cryptography
 @using System.Text
-@using BlazorInputFile
 @using CsvHelper
 @using CsvHelper.Configuration
 @using System.Linq
-@using System.Threading
 @inject HttpClient Http
 
-<MatH3>Hochladen neuer Versicherungsnehmer</MatH3>
+<div style="margin: 0 auto;width: 1000px">
+    <MatH3>Hochladen neuer Versicherungsnehmer</MatH3>
 
-<MatH5>Bitte wählen Sie die CSV-Datei mit den Versicherungsnehmern aus und laden Sie diese mit einem Klick auf Senden hoch.</MatH5>
-<br />
-@if (currentState == ProcessState.WaitForFile)
-{
-    <form @onsubmit="OnSubmit">
-        <MatFileUpload OnChange="@OnInputFileChange" Label="Drop a single file here or Browse"></MatFileUpload>
-        <br /><br />
-        <p>@Message</p>
-    </form>
+    <MatH5>Bitte wählen Sie die CSV-Datei mit den Versicherungsnehmern aus und laden Sie diese mit einem Klick auf Senden hoch.</MatH5>
     <br />
-}
-
-<MatDialog @bind-IsOpen="@IsDialogOpen">
-    <MatDialogTitle>Upload bestätigen</MatDialogTitle>
-    <MatDialogContent>
-        <p>Es wurden @loadedInsuranceHolders?.Count Einträge in der Datei @selectedCsvFile?.Name gefunden.</p>
-        <p>Soll der Upload gestartet werden?.</p>
-    </MatDialogContent>
-    <MatDialogActions>
-        <MatButton OnClick="@(e => { currentState = ProcessState.WaitForFile; })">Nein</MatButton>
-        <MatButton OnClick="@OnStartUpload">Ja</MatButton>
-    </MatDialogActions>
-</MatDialog>
-
-@if (currentState == ProcessState.UploadInProgress)
-{
-    <p>Daten werden hochgeladen. Bitte warten...</p>
-    <MatProgressBar Progress="Progress()"></MatProgressBar>
-}
-
-@if (currentState == ProcessState.UploadFinished && uploadedInsuranceHolders?.Count > 0)
-{
-    @foreach (var entry in uploadedInsuranceHolders)
+    @if (currentState == ProcessState.WaitForFile)
     {
-        <li>
-            <label>@((MarkupString)entry.InsuranceNumber)</label>
-        </li>
+        <div>
+            <MatFileUpload OnChange="@OnInputFileChange" Label="Drop a single file here or Browse"></MatFileUpload>
+        </div>
+        <br />
     }
-}
+
+    <MatDialog @bind-IsOpen="@IsDialogOpen">
+        <MatDialogTitle>Upload bestätigen</MatDialogTitle>
+        <MatDialogContent>
+            <p>Es wurden @loadedInsuranceHolders?.Count Einträge in der Datei @selectedCsvFile?.Name gefunden.</p>
+            <p>Soll der Upload gestartet werden?.</p>
+        </MatDialogContent>
+        <MatDialogActions>
+            <MatButton OnClick="@(e => { currentState = ProcessState.WaitForFile; })">Nein</MatButton>
+            <MatButton OnClick="@OnStartUpload">Ja</MatButton>
+        </MatDialogActions>
+    </MatDialog>
+
+    @if (currentState == ProcessState.UploadInProgress)
+    {
+        <br />
+        <div>
+            <p>Daten werden hochgeladen. Bitte warten...</p>
+            <MatProgressBar Progress="@Progress()"></MatProgressBar>
+        </div>
+
+    }
+
+    @if (currentState == ProcessState.UploadFinished)
+    {
+        @if (uploadedInsuranceHolders?.Count > 0)
+        {
+            <MatH5>Folgende Einträge wurden hochgeladen.</MatH5>
+            <MatList>
+                @foreach (var entry in uploadedInsuranceHolders)
+                {
+                    <MatListItem>
+                        Versicherungsnummer: @entry.InsuranceNumber | Datum: @entry.InsuranceDate
+                    </MatListItem>
+                    <MatListDivider></MatListDivider>
+                }
+            </MatList>
+        }
+        else
+        {
+            <MatH5>Es wurden keine passenden Einträge hochgeladen.</MatH5>
+        }
+        <br />
+        <br />
+        <MatButton OnClick="@Restart">Neue Datei hochladen</MatButton>
+    }
+
+    @if (currentState == ProcessState.Error)
+    {
+        <MatH5 style="color: #ff0033">Fehler: @errorMessage</MatH5>
+        <br />
+        <MatButton OnClick="@Restart">Neue Datei hochladen</MatButton>
+    }
+</div>
 
 @code {
   ProcessState currentState = ProcessState.WaitForFile;
-  string Message = "Keine Datei ausgewählt.";
   IMatFileUploadEntry selectedCsvFile;
-    List<InsuranceHolder> loadedInsuranceHolders;
-    List<InsuranceHolder> uploadedInsuranceHolders;
+  List<InsuranceHolder> loadedInsuranceHolders;
+  List<InsuranceHolder> uploadedInsuranceHolders;
+  string errorMessage;
 
   double currentStep;
   double maxSteps;
+
   private double Progress()
   {
       return maxSteps > 0 ? currentStep / maxSteps : 0;
@@ -68,29 +92,36 @@
   private bool IsDialogOpen
   {
       get => currentState == ProcessState.FileSelected;
-      set {}
+      set { }
   }
 
+  private void Restart()
+  {
+      currentState = ProcessState.WaitForFile;
+      StateHasChanged();
+  }
 
   private async void OnInputFileChange(IMatFileUploadEntry[] files)
   {
       var file = files.FirstOrDefault();
       if (file == null)
       {
-          Message = "Keine Datei ausgewählt.";
+          errorMessage = "Keine Datei ausgewählt.";
+          currentState = ProcessState.Error;
           return;
       }
 
       if (Path.GetExtension(file.Name) != ".csv")
       {
-          Message = "Es muss eine CSV-Datei ausgewählt werden.";
+          errorMessage = "Es muss eine CSV-Datei ausgewählt werden.";
+          currentState = ProcessState.Error;
           return;
       }
 
       try
       {
           selectedCsvFile = file;
-          using var ms = new MemoryStream();
+          await using var ms = new MemoryStream();
           await file.WriteToStreamAsync(ms);
           ms.Position = 0;
           using var reader = new StreamReader(ms);
@@ -107,7 +138,8 @@
       }
       catch (Exception e)
       {
-          Message = e.ToString();
+          errorMessage = e.ToString();
+          currentState = ProcessState.Error;
           return;
       }
 
@@ -115,37 +147,16 @@
       StateHasChanged();
   }
 
-  private async void OnSubmit()
-  {
-      if (selectedCsvFile == null)
-      {
-          return;
-      }
-
-      var accountCreation = new InsuranceHolderAccountCreation
-      {
-          AccessCode = ""
-      };
-
-      var result = await Http.PostAsJsonAsync("/api/fileupload", accountCreation);
-      if (!result.IsSuccessStatusCode)
-      {
-          Message = "Upload fehlgeschlagen";
-      }
-
-      StateHasChanged();
-  }
-
   private async void OnStartUpload()
   {
       currentState = ProcessState.UploadInProgress;
-      Message = $"Datei {selectedCsvFile?.Name} ausgewählt";
       await Task.Delay(1);
       maxSteps = loadedInsuranceHolders.Count;
+      uploadedInsuranceHolders = new List<InsuranceHolder>();
       foreach (var entry in loadedInsuranceHolders)
       {
           var accountCreation = MapToAccountCreation(entry);
-          var result = await Http.PostAsJsonAsync("/api/fileupload", accountCreation);
+          var result = await Http.PostAsJsonAsync("/api/accounts", accountCreation);
           if (result.IsSuccessStatusCode)
           {
               uploadedInsuranceHolders.Add(entry);
@@ -164,7 +175,8 @@
       WaitForFile,
       FileSelected,
       UploadInProgress,
-      UploadFinished
+      UploadFinished,
+      Error
   }
 
   public class InsuranceHolderAccountCreation
@@ -188,8 +200,6 @@
       public string AddressLine4 { get; set; }
       public string AgencyNumber { get; set; }
       public string PolicyStartDate { get; set; }
-
-      public override string ToString() => InsuranceNumber + " " + InsuranceDate;
   }
 
   public class InsuranceHolderMap : ClassMap<InsuranceHolder>
