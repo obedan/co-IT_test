@@ -1,0 +1,234 @@
+﻿@using System.Globalization
+@using System.IO
+@using System.Security.Cryptography
+@using System.Text
+@using BlazorInputFile
+@using CsvHelper
+@using CsvHelper.Configuration
+@using System.Linq
+@using System.Threading
+@inject HttpClient Http
+
+<MatH3>Hochladen neuer Versicherungsnehmer</MatH3>
+
+<MatH5>Bitte wählen Sie die CSV-Datei mit den Versicherungsnehmern aus und laden Sie diese mit einem Klick auf Senden hoch.</MatH5>
+<br />
+@if (currentState == ProcessState.WaitForFile)
+{
+    <form @onsubmit="OnSubmit">
+        <MatFileUpload OnChange="@OnInputFileChange" Label="Drop a single file here or Browse"></MatFileUpload>
+        <br /><br />
+        <p>@Message</p>
+    </form>
+    <br />
+}
+
+<MatDialog @bind-IsOpen="@IsDialogOpen">
+    <MatDialogTitle>Upload bestätigen</MatDialogTitle>
+    <MatDialogContent>
+        <p>Es wurden @loadedInsuranceHolders?.Count Einträge in der Datei @selectedCsvFile?.Name gefunden.</p>
+        <p>Soll der Upload gestartet werden?.</p>
+    </MatDialogContent>
+    <MatDialogActions>
+        <MatButton OnClick="@(e => { currentState = ProcessState.WaitForFile; })">Nein</MatButton>
+        <MatButton OnClick="@OnStartUpload">Ja</MatButton>
+    </MatDialogActions>
+</MatDialog>
+
+@if (currentState == ProcessState.UploadInProgress)
+{
+    <p>Daten werden hochgeladen. Bitte warten...</p>
+    <MatProgressBar Progress="Progress()"></MatProgressBar>
+}
+
+@if (currentState == ProcessState.UploadFinished && uploadedInsuranceHolders?.Count > 0)
+{
+    @foreach (var entry in uploadedInsuranceHolders)
+    {
+        <li>
+            <label>@((MarkupString)entry.InsuranceNumber)</label>
+        </li>
+    }
+}
+
+@code {
+  ProcessState currentState = ProcessState.WaitForFile;
+  string Message = "Keine Datei ausgewählt.";
+  IMatFileUploadEntry selectedCsvFile;
+    List<InsuranceHolder> loadedInsuranceHolders;
+    List<InsuranceHolder> uploadedInsuranceHolders;
+
+  double currentStep;
+  double maxSteps;
+  private double Progress()
+  {
+      return maxSteps > 0 ? currentStep / maxSteps : 0;
+  }
+
+  private bool IsDialogOpen
+  {
+      get => currentState == ProcessState.FileSelected;
+      set {}
+  }
+
+
+  private async void OnInputFileChange(IMatFileUploadEntry[] files)
+  {
+      var file = files.FirstOrDefault();
+      if (file == null)
+      {
+          Message = "Keine Datei ausgewählt.";
+          return;
+      }
+
+      if (Path.GetExtension(file.Name) != ".csv")
+      {
+          Message = "Es muss eine CSV-Datei ausgewählt werden.";
+          return;
+      }
+
+      try
+      {
+          selectedCsvFile = file;
+          using var ms = new MemoryStream();
+          await file.WriteToStreamAsync(ms);
+          ms.Position = 0;
+          using var reader = new StreamReader(ms);
+          var config = new CsvConfiguration(CultureInfo.InvariantCulture)
+          {
+              Delimiter = ";"
+          };
+          using var csv = new CsvReader(reader, config);
+          csv.Context.RegisterClassMap<InsuranceHolderMap>();
+
+          loadedInsuranceHolders = await csv
+              .GetRecordsAsync<InsuranceHolder>()
+              .ToListAsync();
+      }
+      catch (Exception e)
+      {
+          Message = e.ToString();
+          return;
+      }
+
+      currentState = ProcessState.FileSelected;
+      StateHasChanged();
+  }
+
+  private async void OnSubmit()
+  {
+      if (selectedCsvFile == null)
+      {
+          return;
+      }
+
+      var accountCreation = new InsuranceHolderAccountCreation
+      {
+          AccessCode = ""
+      };
+
+      var result = await Http.PostAsJsonAsync("/api/fileupload", accountCreation);
+      if (!result.IsSuccessStatusCode)
+      {
+          Message = "Upload fehlgeschlagen";
+      }
+
+      StateHasChanged();
+  }
+
+  private async void OnStartUpload()
+  {
+      currentState = ProcessState.UploadInProgress;
+      Message = $"Datei {selectedCsvFile?.Name} ausgewählt";
+      await Task.Delay(1);
+      maxSteps = loadedInsuranceHolders.Count;
+      foreach (var entry in loadedInsuranceHolders)
+      {
+          var accountCreation = MapToAccountCreation(entry);
+          var result = await Http.PostAsJsonAsync("/api/fileupload", accountCreation);
+          if (result.IsSuccessStatusCode)
+          {
+              uploadedInsuranceHolders.Add(entry);
+          }
+          currentStep++;
+          StateHasChanged();
+          await Task.Delay(100);
+      }
+      await Task.Delay(100);
+      currentState = ProcessState.UploadFinished;
+      StateHasChanged();
+  }
+
+  public enum ProcessState
+  {
+      WaitForFile,
+      FileSelected,
+      UploadInProgress,
+      UploadFinished
+  }
+
+  public class InsuranceHolderAccountCreation
+  {
+      public string AccessCode { get; set; }
+  }
+
+  public class InsuranceHolderAccount
+  {
+      public string AccessCode { get; set; }
+      public DateTime CreationDate { get; set; }
+  }
+
+  public class InsuranceHolder
+  {
+      public string InsuranceNumber { get; set; }
+      public string InsuranceDate { get; set; }
+      public string AddressLine1 { get; set; }
+      public string AddressLine2 { get; set; }
+      public string AddressLine3 { get; set; }
+      public string AddressLine4 { get; set; }
+      public string AgencyNumber { get; set; }
+      public string PolicyStartDate { get; set; }
+
+      public override string ToString() => InsuranceNumber + " " + InsuranceDate;
+  }
+
+  public class InsuranceHolderMap : ClassMap<InsuranceHolder>
+  {
+      public InsuranceHolderMap()
+      {
+          Map(m => m.InsuranceNumber).Index(0);
+          Map(m => m.AddressLine1).Index(1);
+          Map(m => m.AddressLine2).Index(2);
+          Map(m => m.AddressLine3).Index(3);
+          Map(m => m.AddressLine4).Index(4);
+          Map(m => m.AgencyNumber).Index(5);
+          Map(m => m.PolicyStartDate).Index(6);
+          Map(m => m.InsuranceDate).Index(7);
+      }
+  }
+
+  private static InsuranceHolderAccountCreation MapToAccountCreation(InsuranceHolder holder)
+  {
+      return new InsuranceHolderAccountCreation
+      {
+          AccessCode = CreateAccessCode(holder)
+      };
+  }
+
+  private static string CreateAccessCode(InsuranceHolder holder)
+  {
+      var plainInsuranceData = $"{holder.InsuranceDate}{holder.InsuranceNumber}";
+      var accessCode = ApplyHashAlgorithm(plainInsuranceData);
+      return accessCode;
+  }
+
+  private static string ApplyHashAlgorithm(string value)
+  {
+      var inputBytes = Encoding.UTF8.GetBytes(value);
+
+      var hashedBytes = new SHA512Managed().ComputeHash(inputBytes);
+
+      return BitConverter.ToString(hashedBytes);
+  }
+
+}
